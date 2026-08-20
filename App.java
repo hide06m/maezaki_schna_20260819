@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -41,12 +42,15 @@ public class App {
                 message = "こんにちは、" + name + "さん！";
             } else if (path.equals("/bye")) {
                 message = "さようなら！";
+            } else if (path.equals("/notifications")) {
+                message = dueNotificationsJson();
+                contentType = "application/json; charset=UTF-8";
             } else if (path.equals("/add") && method.equals("POST")) {
                 String formData = readBody(exchange);
                 String title = formValue(formData, "todo");
-                String dueDate = validDueDate(formValue(formData, "due"));
-                if (isValidTitle(title) && dueDate != null) {
-                    todos.add(new Todo(nextId++, title, false, dueDate));
+                String dueDateTime = validDueDateTime(formValue(formData, "due"));
+                if (isValidTitle(title) && dueDateTime != null) {
+                    todos.add(new Todo(nextId++, title, false, dueDateTime));
                     saveData();
                 }
                 redirect(exchange);
@@ -107,14 +111,14 @@ public class App {
                 .append("font-family:'MS UI Gothic','ＭＳ Ｐゴシック',sans-serif;background:#008080;color:#000}")
                 .append("main{background:#c0c0c0;border:3px outset #eee;padding:14px}")
                 .append("h1{color:#fff;background:#000080;padding:8px;font-size:24px;margin:0 0 14px}")
-                .append("input[type=text],input[type=email],input[type=date]{width:280px}")
+                .append("input[type=text],input[type=email],input[type=datetime-local]{width:280px}")
                 .append("a{color:#000080}li{margin:8px 0}.notice{background:#ffffcc;border:1px dashed #000;padding:6px}")
                 .append("</style></head><body><main>")
                 .append("<h1>★ わたしのTodo ★</h1>")
                 .append("<p class='notice'>ようこそ！ 今日もこつこつ片づけよう！</p>")
                 .append("<form method='post' action='/add'>")
                 .append("<input type='text' name='todo' maxlength='200' placeholder='やることを入力' required>")
-                .append("<input type='date' name='due'>")
+                .append("<input type='datetime-local' name='due'>")
                 .append("<button type='submit'>追加</button></form>")
                 .append("<h2>タスク一覧</h2><ul>");
 
@@ -158,19 +162,28 @@ public class App {
                 .append("function toggleTrash(){var x=document.getElementById('trash');")
                 .append("x.style.display=x.style.display==='none'?'block':'none';}")
                 .append("function enableBrowserNotification(){")
-                .append("if('Notification' in window){Notification.requestPermission();}")
+                .append("if('Notification' in window){Notification.requestPermission().then(checkNotifications);}")
                 .append("else{alert('このブラウザは通知に対応していません');}}")
                 .append("function testBrowserNotification(){")
                 .append("if('Notification' in window&&Notification.permission==='granted'){")
                 .append("new Notification('Todo通知',{body:'通知のテストです'});}")
                 .append("else{alert('先に「ブラウザ通知を許可」を押してください');}}")
+                .append("function checkNotifications(){")
+                .append("if(!('Notification' in window)||Notification.permission!=='granted')return;")
+                .append("fetch('/notifications').then(function(r){return r.json();}).then(function(items){")
+                .append("var sent=JSON.parse(localStorage.getItem('todoNotifications')||'{}');")
+                .append("items.forEach(function(item){if(!sent[item.id]){")
+                .append("new Notification('Todoの期限',{body:item.title});sent[item.id]=true;}});")
+                .append("localStorage.setItem('todoNotifications',JSON.stringify(sent));});}")
+                .append("setInterval(checkNotifications,60000);checkNotifications();")
                 .append("</script></main></body></html>");
 
         return html.toString();
     }
 
     private static String todoHtml(Todo todo) {
-        String due = todo.getDueDate().isEmpty() ? "" : "（期限: " + htmlEscape(todo.getDueDate()) + "）";
+        String due = todo.getDueDate().isEmpty() ? "" : "（期限: "
+                + htmlEscape(displayDateTime(todo.getDueDate())) + "）";
         return "<li><form method='get' action='/toggle' style='display:inline'>"
                 + "<input type='hidden' name='id' value='" + todo.getId() + "'>"
                 + "<input type='checkbox' onchange='this.form.submit()'"
@@ -188,19 +201,44 @@ public class App {
         return "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Todo編集</title></head><body>"
                 + "<h1>Todoを編集</h1><form method='post' action='/edit'>"
                 + "<input type='hidden' name='id' value='" + target.getId() + "'>"
-                + "<input type='text' name='todo' maxlength='200' value='" + htmlEscape(target.getTitle()) + "' required>"
-                + "<input type='date' name='due' value='" + htmlEscape(target.getDueDate()) + "'>"
+                + "<input type='text' name='todo' maxlength='200' value='"
+                + htmlEscape(target.getTitle()) + "' required>"
+                + "<input type='datetime-local' name='due' value='"
+                + htmlEscape(target.getDueDate()) + "'>"
                 + "<button type='submit'>保存</button></form><p><a href='/'>戻る</a></p></body></html>";
+    }
+
+    private static String dueNotificationsJson() {
+        StringBuilder json = new StringBuilder("[");
+        LocalDateTime now = LocalDateTime.now();
+        boolean first = true;
+        for (Todo todo : todos) {
+            if (!todo.isDone() && !todo.getDueDate().isEmpty()) {
+                try {
+                    if (!LocalDateTime.parse(todo.getDueDate()).isAfter(now)) {
+                        if (!first) {
+                            json.append(",");
+                        }
+                        json.append("{\"id\":").append(todo.getId())
+                                .append(",\"title\":\"").append(jsonEscape(todo.getTitle())).append("\"}");
+                        first = false;
+                    }
+                } catch (DateTimeParseException e) {
+                    // 壊れた期限は通知対象にしない
+                }
+            }
+        }
+        return json.append("]").toString();
     }
 
     private static void editTodo(String formData) {
         Integer id = parseId(formValue(formData, "id"));
         String title = formValue(formData, "todo");
-        String dueDate = validDueDate(formValue(formData, "due"));
+        String dueDateTime = validDueDateTime(formValue(formData, "due"));
         Todo target = findById(todos, id);
-        if (target != null && isValidTitle(title) && dueDate != null) {
+        if (target != null && isValidTitle(title) && dueDateTime != null) {
             target.setTitle(title);
-            target.setDueDate(dueDate);
+            target.setDueDate(dueDateTime);
         }
     }
 
@@ -212,8 +250,7 @@ public class App {
     }
 
     private static void moveToTrash(HttpExchange exchange) {
-        Integer id = readId(exchange);
-        Todo todo = findById(todos, id);
+        Todo todo = findById(todos, readId(exchange));
         if (todo != null) {
             todos.remove(todo);
             trash.add(todo);
@@ -221,8 +258,7 @@ public class App {
     }
 
     private static void restoreFromTrash(HttpExchange exchange) {
-        Integer id = readId(exchange);
-        Todo todo = findById(trash, id);
+        Todo todo = findById(trash, readId(exchange));
         if (todo != null) {
             trash.remove(todo);
             todos.add(todo);
@@ -277,16 +313,34 @@ public class App {
         return title != null && !title.trim().isEmpty() && title.length() <= 200;
     }
 
-    private static String validDueDate(String value) {
+    private static String validDueDateTime(String value) {
         if (value == null || value.isEmpty()) {
             return "";
         }
         try {
-            LocalDate.parse(value);
+            LocalDateTime.parse(value);
             return value;
         } catch (DateTimeParseException e) {
             return null;
         }
+    }
+
+    private static String normalizeStoredDateTime(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        try {
+            if (value.length() == 10) {
+                return LocalDate.parse(value).atTime(23, 59).toString();
+            }
+            return LocalDateTime.parse(value).toString();
+        } catch (DateTimeParseException e) {
+            return "";
+        }
+    }
+
+    private static String displayDateTime(String value) {
+        return value.replace("T", " ");
     }
 
     private static boolean isValidEmail(String email) {
@@ -296,6 +350,11 @@ public class App {
     private static String htmlEscape(String value) {
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 .replace("\"", "&quot;").replace("'", "&#39;");
+    }
+
+    private static String jsonEscape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r");
     }
 
     private static void redirect(HttpExchange exchange) throws IOException {
@@ -322,9 +381,9 @@ public class App {
             try {
                 int id = Integer.parseInt(parts[1]);
                 boolean done = Boolean.parseBoolean(parts[2]);
-                String dueDate = decode(parts[3]);
+                String dueDateTime = normalizeStoredDateTime(decode(parts[3]));
                 String title = decode(parts[4]);
-                Todo todo = new Todo(id, title, done, dueDate);
+                Todo todo = new Todo(id, title, done, dueDateTime);
                 if (parts[0].equals("T")) {
                     trash.add(todo);
                 } else {
