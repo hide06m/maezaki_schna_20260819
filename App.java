@@ -61,6 +61,11 @@ public class App {
                 saveData();
                 redirect(exchange);
                 return;
+            } else if (path.equals("/bulk") && method.equals("POST")) {
+                bulkAction(readBody(exchange));
+                saveData();
+                redirect(exchange);
+                return;
             } else if (path.equals("/delete")) {
                 moveToTrash(exchange);
                 saveData();
@@ -134,7 +139,8 @@ public class App {
                 .append(prioritySelect(priorityFilter, "priority"))
                 .append(sortSelect(sort))
                 .append("<button type='submit'>検索</button> <a href='/'>すべて表示</a></form>")
-                .append("<h2>タスク一覧</h2><ul>");
+                .append("<h2>タスク一覧</h2>")
+                .append("<form id='bulkForm' method='post' action='/bulk'></form><ul>");
 
         List<Todo> visibleTodos = new ArrayList<>();
         for (Todo todo : todos) {
@@ -153,7 +159,8 @@ public class App {
             html.append("</ul>");
         }
 
-        html.append("<h2>通知設定</h2><form method='post' action='/settings'>")
+        html.append("<p><select name='action' form='bulkForm'><option value='done'>選択したTodoを完了</option><option value='delete'>選択したTodoをゴミ箱へ</option></select> <button type='submit' form='bulkForm'>一括実行</button></p>")
+                .append("<h2>通知設定</h2><form method='post' action='/settings'>")
                 .append("<label>通知先メールアドレス: <input type='email' name='email' value='")
                 .append(htmlEscape(notificationEmail)).append("'></label>")
                 .append("<button type='submit'>保存</button></form>");
@@ -195,6 +202,7 @@ public class App {
         String due = todo.getDueDate().isEmpty() ? "" : "（期限: "
                 + htmlEscape(todo.getDueDate().replace("T", " ")) + "）";
         return "<li><form method='get' action='/toggle' style='display:inline'>"
+                + "<input type='checkbox' form='bulkForm' name='selected' value='" + todo.getId() + "'> "
                 + "<input type='hidden' name='id' value='" + todo.getId() + "'>"
                 + "<input type='checkbox' onchange='this.form.submit()'"
                 + (todo.isDone() ? " checked" : "") + "></form> "
@@ -282,6 +290,32 @@ public class App {
         }
     }
 
+    private static void bulkAction(String formData) {
+        String action = formValue(formData, "action");
+        for (String value : formValues(formData, "selected")) {
+            Integer id = parseId(value);
+            Todo todo = findById(todos, id);
+            if (todo == null) continue;
+            if (action.equals("done")) {
+                todo.setDone(true);
+            } else if (action.equals("delete")) {
+                todos.remove(todo);
+                trash.add(todo);
+            }
+        }
+    }
+
+    private static List<String> formValues(String formData, String key) {
+        List<String> values = new ArrayList<>();
+        if (formData == null) return values;
+        for (String part : formData.split("&")) {
+            String[] pair = part.split("=", 2);
+            if (pair.length == 2 && pair[0].equals(key)) {
+                values.add(URLDecoder.decode(pair[1], StandardCharsets.UTF_8));
+            }
+        }
+        return values;
+    }
     private static void changeDone(HttpExchange exchange) {
         Todo todo = findById(todos, readId(exchange));
         if (todo != null) {
