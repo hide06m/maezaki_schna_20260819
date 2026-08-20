@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.List;
 
 public class App {
@@ -80,7 +81,7 @@ public class App {
                 return;
             } else if (path.equals("/")) {
                 String query = exchange.getRequestURI().getRawQuery();
-                message = homePage(formValue(query, "q"), validPriority(formValue(query, "priority")));
+                message = homePage(formValue(query, "q"), validPriority(formValue(query, "priority")), formValue(query, "sort"));
                 contentType = "text/html; charset=UTF-8";
             } else {
                 message = "ページが見つかりません";
@@ -107,7 +108,7 @@ public class App {
         }
     }
 
-    private static String homePage(String search, String priorityFilter) {
+    private static String homePage(String search, String priorityFilter, String sort) {
         StringBuilder html = new StringBuilder();
         html.append("<!DOCTYPE html><html><head><meta charset='UTF-8'><title>わたしのTodo</title><style>")
                 .append("body{max-width:760px;margin:24px auto;padding:0 16px;font-size:16px;")
@@ -131,20 +132,24 @@ public class App {
                 .append("<input type='text' name='q' value='").append(htmlEscape(search))
                 .append("' placeholder='タイトル・カテゴリを検索'>")
                 .append(prioritySelect(priorityFilter, "priority"))
+                .append(sortSelect(sort))
                 .append("<button type='submit'>検索</button> <a href='/'>すべて表示</a></form>")
                 .append("<h2>タスク一覧</h2><ul>");
 
-        int shown = 0;
+        List<Todo> visibleTodos = new ArrayList<>();
         for (Todo todo : todos) {
             if (matches(todo, search, priorityFilter)) {
-                html.append(todoHtml(todo));
-                shown++;
+                visibleTodos.add(todo);
             }
         }
-        if (shown == 0) {
+        visibleTodos.sort((left, right) -> compareTodos(left, right, sort));
+        if (visibleTodos.isEmpty()) {
             html.append(todos.isEmpty() ? "</ul><p>タスクはありません</p>"
                     : "</ul><p>条件に一致するTodoはありません</p>");
         } else {
+            for (Todo todo : visibleTodos) {
+                html.append(todoHtml(todo));
+            }
             html.append("</ul>");
         }
 
@@ -224,6 +229,36 @@ public class App {
         return html.append("</select>").toString();
     }
 
+    private static String sortSelect(String selected) {
+        StringBuilder html = new StringBuilder("<select name='sort'>");
+        String[][] options = {{"priority", "優先度順"}, {"due", "期限順"}, {"new", "新しい順"}};
+        for (String[] option : options) {
+            html.append("<option value='").append(option[0]).append("'")
+                    .append(option[0].equals(selected) ? " selected" : "").append(">").append(option[1]).append("</option>");
+        }
+        return html.append("</select>").toString();
+    }
+
+    private static int compareTodos(Todo left, Todo right, String sort) {
+        if ("due".equals(sort)) {
+            String leftDue = left.getDueDate();
+            String rightDue = right.getDueDate();
+            if (leftDue.isEmpty() && rightDue.isEmpty()) return 0;
+            if (leftDue.isEmpty()) return 1;
+            if (rightDue.isEmpty()) return -1;
+            return leftDue.compareTo(rightDue);
+        }
+        if ("new".equals(sort)) {
+            return Integer.compare(right.getId(), left.getId());
+        }
+        return Integer.compare(priorityNumber(left.getPriority()), priorityNumber(right.getPriority()));
+    }
+
+    private static int priorityNumber(String priority) {
+        if ("高".equals(priority)) return 0;
+        if ("低".equals(priority)) return 2;
+        return 1;
+    }
     private static boolean matches(Todo todo, String search, String priorityFilter) {
         boolean textMatches = search == null || search.isEmpty()
                 || todo.getTitle().toLowerCase().contains(search.toLowerCase())
